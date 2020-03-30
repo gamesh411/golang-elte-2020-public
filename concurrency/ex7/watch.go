@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -74,12 +75,51 @@ func CompareFileSets(before, after FileSet) (added, edited, deleted []string) {
 }
 
 func HashAll() FileSet {
-	// TODO: parallelize the checksum calculation
-	results := make(FileSet)
-	for _, path := range Files() {
-		results[path] = Hash(path)
-	}
-	// END OMIT
+  results := make(FileSet)
+
+  // Number of workers allowed at the same time.
+  parallelism := 4;
+
+  files_chan := make(chan string)
+  hashes := make(chan *Hashed)
+
+  // Make the files to be hashed available in
+  // a channel.
+  go func() {
+    for _, path := range Files() {
+      files_chan <- path
+    }
+    close(files_chan)
+  }()
+
+  // Instead of worklist items,
+  // alive workers are counted in
+  // the waitgroup.
+  wg := sync.WaitGroup{}
+  wg.Add(parallelism)
+
+  // Start every worker.
+  for i := 0; i < parallelism; i++ {
+    // Should not do WaitGroup.Add here,
+    // otherwise the WaitGroup counter
+    // can reach 0 prematurely.
+    go func() {
+      defer wg.Done()
+      for path := range files_chan {
+        hashes <- Hash(path)
+      }
+    }()
+  }
+
+  // Wait for every worker async.
+  go func() {
+    wg.Wait()
+    close(hashes)
+  }()
+
+  for hash := range hashes {
+    results[hash.Path] = hash
+  }
 	return results
 }
 
